@@ -22,7 +22,10 @@ import { BottomSheet } from './BottomSheet'
 import { SaveIndicator } from './SaveIndicator'
 import { useSaveTracker } from '../hooks/useSaveTracker'
 import { stringifyScalar } from '../value-utils'
-import { buildDateValue, parseDateValue, shiftDateValue, snapMinutes, yToMinutes } from '../calendar-utils'
+import {
+	applyMove, applyMoveToEnd, buildDateValue, computeMoveDelta, parseDateValue, shiftDateValue,
+	snapMinutes, yToMinutes, type DropTarget,
+} from '../calendar-utils'
 import { InlineCreateInput } from './InlineCreateInput'
 import { useCalendarSelection } from '../hooks/useCalendarSelection'
 
@@ -115,6 +118,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	const [actionDay, setActionDay] = useState<{ year: number; month: number; day: number } | null>(null)
 	const [draft, setDraft] = useState<CreateDraft | null>(null)
 	const longPressRef = useRef<number | null>(null)
+	const dragGrabPxRef = useRef(0)
 	const weekBodyRef = useRef<HTMLDivElement>(null)
 	const [nowMinutes, setNowMinutes] = useState(() => { const n = new Date(); return n.getHours() * 60 + n.getMinutes() })
 
@@ -368,6 +372,10 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		e.dataTransfer.setData('nb-cal-path', row._file.path)
 		e.dataTransfer.effectAllowed = 'move'
 		e.stopPropagation()
+		// Vertical distance from the card's top edge, so the card lands where its top was aimed.
+		dragGrabPxRef.current = e.clientY - e.currentTarget.getBoundingClientRect().top
+		// Dragging an unselected card moves only that card; dragging a selected one moves the whole selection.
+		if (!selection.selected.has(row._file.path)) selection.selectOnly(row._file.path)
 	}
 
 	const handleDayDragOver = (e: React.DragEvent, day: number) => {
@@ -381,40 +389,37 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOverDay(null)
 	}
 
-	const handleDayDrop = async (e: React.DragEvent, year: number, month: number, day: number) => {
+	const moveDraggedCards = async (e: React.DragEvent, target: DropTarget) => {
 		e.preventDefault()
 		e.stopPropagation()
 		setDragOverDay(null)
-		const path = e.dataTransfer.getData('nb-cal-path')
-		if (!path || !dateField) return
-		const file = app.vault.getFileByPath(path)
-		if (!file) return
-		const datePart = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-		await trackSave(app.fileManager.processFrontMatter(file, (fm: Record<string, unknown>) => {
-			const existing = fm[dateField.id]
-			// Shift the end date by the same number of days so the event
-			// keeps its duration when dragged to another day (#58).
-			if (endDateField) {
-				const oldStart = parseDateValue(existing)
-				const oldEnd = parseDateValue(fm[endDateField.id])
-				if (oldStart && oldEnd) {
-					const deltaDays = Math.round((new Date(year, month, day).getTime() - new Date(oldStart.year, oldStart.month, oldStart.day).getTime()) / 86400000)
-					if (deltaDays !== 0) {
-						const newEnd = new Date(oldEnd.year, oldEnd.month, oldEnd.day + deltaDays)
-						const endDatePart = `${newEnd.getFullYear()}-${String(newEnd.getMonth() + 1).padStart(2, '0')}-${String(newEnd.getDate()).padStart(2, '0')}`
-						const existingEnd = fm[endDateField.id]
-						fm[endDateField.id] = (typeof existingEnd === 'string' && existingEnd.includes('T'))
-							? `${endDatePart}T${existingEnd.split('T')[1]}`
-							: endDatePart
+		const anchorPath = e.dataTransfer.getData('nb-cal-path')
+		const anchor = rowByPath.get(anchorPath)
+		if (!anchor || !dateField) return
+		const group = selection.selected.has(anchorPath)
+			? Array.from(selection.selected).map(p => rowByPath.get(p)).filter((r): r is NoteRow => r !== undefined)
+			: [anchor]
+		const delta = computeMoveDelta((anchor as Record<string, unknown>)[dateField.id], target)
+		await trackSave(Promise.all(group.map(row =>
+			app.fileManager.processFrontMatter(row._file, (fm: Record<string, unknown>) => {
+				const nextStart = applyMove(fm[dateField.id], delta, target, row === anchor)
+				if (nextStart !== fm[dateField.id]) fm[dateField.id] = nextStart
+				// Keep each event's duration: the end moves by the same amount (#58).
+				if (endDateField) {
+					const end = fm[endDateField.id]
+					if (typeof end === 'string' && parseDateValue(end)) {
+						const nextEnd = applyMoveToEnd(end, delta, target)
+						if (nextEnd !== end) fm[endDateField.id] = nextEnd
 					}
 				}
-			}
-			if (typeof existing === 'string' && existing.includes('T')) {
-				fm[dateField.id] = `${datePart}T${existing.split('T')[1]}`
-			} else {
-				fm[dateField.id] = datePart
-			}
-		}))
+			})
+		)))
+	}
+
+	const handleTimeDrop = (e: React.DragEvent<HTMLDivElement>, d: Date) => {
+		const rect = e.currentTarget.getBoundingClientRect()
+		const minutes = snapMinutes(yToMinutes(e.clientY - rect.top - dragGrabPxRef.current, rect.height))
+		void moveDraggedCards(e, { kind: 'time', year: d.getFullYear(), month: d.getMonth(), day: d.getDate(), minutes })
 	}
 
 	// ── Render ────────────────────────────────────────────────────────────────
@@ -776,7 +781,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 											onClick={() => { handleDayClick(d.getFullYear(), d.getMonth(), d.getDate()) }}
 											onDragOver={e => handleDayDragOver(e, d.getDate())}
 											onDragLeave={handleDayDragLeave}
-											onDrop={e => { void handleDayDrop(e, d.getFullYear(), d.getMonth(), d.getDate()) }}
+											onDrop={e => { void moveDraggedCards(e, { kind: 'all-day', year: d.getFullYear(), month: d.getMonth(), day: d.getDate() }) }}
 										>
 											{dayRows.map(row => (
 												<div
@@ -837,7 +842,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 											onClick={e => { handleTimeClick(e, d) }}
 											onDragOver={e => handleDayDragOver(e, d.getDate())}
 											onDragLeave={handleDayDragLeave}
-											onDrop={e => { void handleDayDrop(e, d.getFullYear(), d.getMonth(), d.getDate()) }}
+											onDrop={e => { handleTimeDrop(e, d) }}
 										>
 											{/* Hour grid lines */}
 											{Array.from({ length: 24 }, (_, h) => (
@@ -916,7 +921,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 										onClick={!isMobile ? () => { handleDayClick(currentYear, currentMonth, day) } : undefined}
 										onDragOver={e => handleDayDragOver(e, day)}
 										onDragLeave={handleDayDragLeave}
-										onDrop={e => { void handleDayDrop(e, currentYear, currentMonth, day) }}
+										onDrop={e => { void moveDraggedCards(e, { kind: 'month-day', year: currentYear, month: currentMonth, day }) }}
 										title={!isMobile ? t('calendar_click_to_create') : undefined}
 										onTouchStart={isMobile ? () => { longPressRef.current = window.setTimeout(() => { setActionDay({ year: currentYear, month: currentMonth, day }) }, 500) } : undefined}
 										onTouchMove={isMobile ? () => { if (longPressRef.current) { window.clearTimeout(longPressRef.current); longPressRef.current = null } } : undefined}

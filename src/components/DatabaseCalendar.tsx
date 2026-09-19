@@ -22,7 +22,8 @@ import { BottomSheet } from './BottomSheet'
 import { SaveIndicator } from './SaveIndicator'
 import { useSaveTracker } from '../hooks/useSaveTracker'
 import { stringifyScalar } from '../value-utils'
-import { parseDateValue } from '../calendar-utils'
+import { buildDateValue, parseDateValue, shiftDateValue, snapMinutes, yToMinutes } from '../calendar-utils'
+import { InlineCreateInput } from './InlineCreateInput'
 import { useCalendarSelection } from '../hooks/useCalendarSelection'
 
 interface DatabaseCalendarProps {
@@ -88,6 +89,13 @@ function getRowTime(row: NoteRow, fieldId: string): string | null {
 	return formatTime(parsed.hour, parsed.minute)
 }
 
+interface CreateDraft {
+	year: number
+	month: number // 0-based
+	day: number
+	minutes: number | null // null = all-day / date only
+}
+
 export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }: DatabaseCalendarProps) {
 	const app = useApp()
 	const { status: saveStatus, trackSave } = useSaveTracker()
@@ -105,6 +113,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	const [dragOverDay, setDragOverDay] = useState<number | null>(null)
 	const [expandedDay, setExpandedDay] = useState<string | null>(null)
 	const [actionDay, setActionDay] = useState<{ year: number; month: number; day: number } | null>(null)
+	const [draft, setDraft] = useState<CreateDraft | null>(null)
 	const longPressRef = useRef<number | null>(null)
 	const weekBodyRef = useRef<HTMLDivElement>(null)
 	const [nowMinutes, setNowMinutes] = useState(() => { const n = new Date(); return n.getHours() * 60 + n.getMinutes() })
@@ -129,6 +138,9 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	}, [onViewChange])
 
 	const viewMode = activeView.calendarViewMode ?? 'month'
+
+	// A pending inline title box belongs to the page it was opened on.
+	useEffect(() => { setDraft(null) }, [currentYear, currentMonth, currentDay, viewMode])
 
 	// ── Close menus on outside click ─────────────────────────────────────────
 
@@ -322,12 +334,34 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		setCurrentDay(today.getDate())
 	}
 
-	const handleDayClick = async (year: number, month: number, day: number) => {
-		selection.clear()
+	const createAt = async (target: CreateDraft, title?: string) => {
 		if (!dbFile || !dateField) return
-		const newFile = await manager.createNoteWithTemplate(dbFile)
-		const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
-		await trackSave(app.fileManager.processFrontMatter(newFile, (fm: Record<string, unknown>) => { fm[dateField.id] = dateStr }))
+		const start = buildDateValue(target.year, target.month, target.day, target.minutes)
+		const initial: Record<string, unknown> = { [dateField.id]: start }
+		// A note created on a time slot gets a default one-hour length when an end field is set.
+		if (endDateField && target.minutes !== null) initial[endDateField.id] = shiftDateValue(start, 0, 60)
+		await trackSave(manager.createNoteWithTemplate(dbFile, initial, title))
+	}
+
+	const startDraft = (target: CreateDraft) => {
+		selection.clear()
+		setDraft(target)
+	}
+
+	const handleDayClick = (year: number, month: number, day: number) => {
+		startDraft({ year, month, day, minutes: null })
+	}
+
+	const handleTimeClick = (e: React.MouseEvent<HTMLDivElement>, d: Date) => {
+		const rect = e.currentTarget.getBoundingClientRect()
+		const minutes = snapMinutes(yToMinutes(e.clientY - rect.top, rect.height))
+		startDraft({ year: d.getFullYear(), month: d.getMonth(), day: d.getDate(), minutes })
+	}
+
+	const commitDraft = (title: string) => {
+		const target = draft
+		setDraft(null)
+		if (target) void createAt(target, title)
 	}
 
 	const handleCardDragStart = (e: React.DragEvent, row: NoteRow) => {
@@ -428,6 +462,20 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 			void trackSave(manager.deleteNotes(files))
 		}
 	}
+
+	const isDraftOn = (year: number, month: number, day: number, timed: boolean) =>
+		draft !== null && draft.year === year && draft.month === month && draft.day === day && (draft.minutes !== null) === timed
+
+	const draftInput = (className: string, style?: React.CSSProperties) => draft && (
+		<InlineCreateInput
+			key={`${draft.year}-${draft.month}-${draft.day}-${draft.minutes}`}
+			className={className}
+			style={style}
+			defaultValue={t('db_untitled_note')}
+			onCommit={commitDraft}
+			onCancel={() => setDraft(null)}
+		/>
+	)
 
 	const toolbarContent = isMobile ? (
 		<MobileToolbar
@@ -725,7 +773,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 										<div
 											key={key}
 											className="nb-cal-week-allday-cell"
-											onClick={() => { void handleDayClick(d.getFullYear(), d.getMonth(), d.getDate()) }}
+											onClick={() => { handleDayClick(d.getFullYear(), d.getMonth(), d.getDate()) }}
 											onDragOver={e => handleDayDragOver(e, d.getDate())}
 											onDragLeave={handleDayDragLeave}
 											onDrop={e => { void handleDayDrop(e, d.getFullYear(), d.getMonth(), d.getDate()) }}
@@ -742,6 +790,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 													<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
 												</div>
 											))}
+											{isDraftOn(d.getFullYear(), d.getMonth(), d.getDate(), false) && draftInput('nb-cal-inline-input')}
 										</div>
 									)
 								})}
@@ -785,7 +834,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 										<div
 											key={key}
 											className={`nb-cal-week-day-col${isToday ? ' nb-cal-week-day-col--today' : ''}`}
-											onClick={() => { void handleDayClick(d.getFullYear(), d.getMonth(), d.getDate()) }}
+											onClick={e => { handleTimeClick(e, d) }}
 											onDragOver={e => handleDayDragOver(e, d.getDate())}
 											onDragLeave={handleDayDragLeave}
 											onDrop={e => { void handleDayDrop(e, d.getFullYear(), d.getMonth(), d.getDate()) }}
@@ -836,6 +885,10 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 													</div>
 												)
 											})}
+											{isDraftOn(d.getFullYear(), d.getMonth(), d.getDate(), true) && draftInput(
+												'nb-cal-inline-input nb-cal-inline-input--timed',
+												{ top: `${((draft?.minutes ?? 0) / 1440) * 100}%` },
+											)}
 										</div>
 									)
 								})}
@@ -860,7 +913,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 									<div
 										key={day}
 										className={`nb-cal-cell${isToday ? ' nb-cal-cell--today' : ''}${isDragOver ? ' nb-cal-cell--drag-over' : ''}`}
-										onClick={!isMobile ? () => { void handleDayClick(currentYear, currentMonth, day) } : undefined}
+										onClick={!isMobile ? () => { handleDayClick(currentYear, currentMonth, day) } : undefined}
 										onDragOver={e => handleDayDragOver(e, day)}
 										onDragLeave={handleDayDragLeave}
 										onDrop={e => { void handleDayDrop(e, currentYear, currentMonth, day) }}
@@ -920,6 +973,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 														+{extraCount}
 													</button>
 												)}
+												{isDraftOn(currentYear, currentMonth, day, false) && draftInput('nb-cal-inline-input')}
 											</>
 										})()}
 									</div>
@@ -975,7 +1029,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 					const dayKey = dateKey(actionDay.year, actionDay.month, actionDay.day)
 					const dayRows = rowsByDate.get(dayKey) ?? []
 					return <>
-						<button className="nb-menu-item" onClick={() => { void handleDayClick(actionDay.year, actionDay.month, actionDay.day); setActionDay(null) }}>
+						<button className="nb-menu-item" onClick={() => { void createAt({ year: actionDay.year, month: actionDay.month, day: actionDay.day, minutes: null }); setActionDay(null) }}>
 							<span className="nb-menu-item-icon"><IconPlus /></span><span>{t('add_card')}</span>
 						</button>
 						{dayRows.length > 0 && <div className="nb-menu-separator" />}

@@ -194,6 +194,9 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		() => config.schema.filter(col => col.visible && !activeView.hiddenColumns.includes(col.id)),
 		[config.schema, activeView.hiddenColumns]
 	)
+	// Checkbox columns become a tickable box on the card instead of a text value.
+	const checkboxCols = useMemo(() => visibleCols.filter(col => col.type === 'checkbox'), [visibleCols])
+	const propCols = useMemo(() => visibleCols.filter(col => col.type !== 'checkbox'), [visibleCols])
 
 	const calendarCells = useMemo(() => buildCalendarGrid(currentYear, currentMonth), [currentYear, currentMonth])
 
@@ -465,6 +468,19 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		e.stopPropagation()
 		if (!isMobile) openRow(row)
 	}
+
+	const renderCheckboxes = (row: NoteRow) => checkboxCols.map(col => (
+		<input
+			key={col.id}
+			type="checkbox"
+			className="nb-cal-card-checkbox"
+			title={col.name}
+			checked={Boolean(row[col.id])}
+			onChange={e => { void trackSave(manager.updateNoteField(row._file, col.id, e.target.checked, row._inlineFields)) }}
+			onClick={e => e.stopPropagation()}
+			onDoubleClick={e => e.stopPropagation()}
+		/>
+	))
 
 	const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
 		if (isMobile) return
@@ -805,7 +821,10 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 													onClick={e => handleCardClick(e, row)}
 													onDoubleClick={e => handleCardDoubleClick(e, row)}
 												>
-													<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
+													<div className="nb-cal-card-title-row">
+														{renderCheckboxes(row)}
+														<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
+													</div>
 												</div>
 											))}
 											{isDraftOn(d.getFullYear(), d.getMonth(), d.getDate(), false) && draftInput('nb-cal-inline-input')}
@@ -897,6 +916,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 														style={{ top: `${topPct}%`, ...(heightPct !== null ? { height: `${heightPct}%` } : {}) }}
 													>
 														<div className="nb-cal-card-title-row">
+															{renderCheckboxes(row)}
 															<span className="nb-cal-time-badge">{endLabel ? `${formatTime(p.hour, p.minute)}–${endLabel}` : formatTime(p.hour, p.minute)}</span>
 															<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
 														</div>
@@ -960,6 +980,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 														onDoubleClick={e => handleCardDoubleClick(e, row)}
 													>
 														<div className="nb-cal-card-title-row">
+															{renderCheckboxes(row)}
 															{dateField && (() => { const tm = getRowTime(row, dateField.id); return tm ? <span className="nb-cal-time-badge">{tm}</span> : null })()}
 															<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
 														</div>
@@ -970,9 +991,9 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 																? fileFolder.slice(dbFolder.length + 1) : ''
 															return relPath ? <div className="nb-folder-path">{relPath}</div> : null
 														})()}
-														{!isMobile && visibleCols.length > 0 && (
+														{!isMobile && propCols.length > 0 && (
 															<div className="nb-cal-card-props">
-																{visibleCols.map(col => {
+																{propCols.map(col => {
 																	const val = row[col.id]
 																	if (val === null || val === undefined || stringifyScalar(val).trim() === '') return null
 																	const display = Array.isArray(val) ? (val as string[]).join(', ') : stringifyScalar(val)
@@ -1016,7 +1037,10 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 										onClick={e => handleCardClick(e, row)}
 										onDoubleClick={e => handleCardDoubleClick(e, row)}
 									>
-										<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
+										<div className="nb-cal-card-title-row">
+											{renderCheckboxes(row)}
+											<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
+										</div>
 										{(() => {
 											const dbFolder = dbFile?.parent?.path ?? ''
 											const fileFolder = row._file.parent?.path ?? ''

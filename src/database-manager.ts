@@ -1,5 +1,6 @@
 import { App, Notice, TFile, TFolder, normalizePath, parseYaml } from 'obsidian'
 import { t } from './i18n'
+import { sanitizeTitle } from './calendar-utils'
 import {
 	ColumnSchema,
 	ColumnType,
@@ -346,9 +347,11 @@ export class DatabaseManager {
 		dbFile: TFile,
 		initialFrontmatter?: Record<string, unknown>,
 		templatePath?: string | null,
+		title?: string,
 	): Promise<TFile> {
 		const folderPath = dbFile.parent?.path ?? ''
-		const base = normalizePath(`${folderPath}/${t('db_untitled_note')}`)
+		const name = sanitizeTitle(title ?? '', t('db_untitled_note'))
+		const base = normalizePath(`${folderPath}/${name}`)
 		let path = `${base}.md`
 		let i = 1
 		while (this.app.vault.getFileByPath(path)) {
@@ -369,7 +372,7 @@ export class DatabaseManager {
 	}
 
 	/** createNote + automatic template resolution based on db config. Opens picker if askTemplateOnCreate is on. */
-	async createNoteWithTemplate(dbFile: TFile, initialFrontmatter?: Record<string, unknown>): Promise<TFile> {
+	async createNoteWithTemplate(dbFile: TFile, initialFrontmatter?: Record<string, unknown>, title?: string): Promise<TFile> {
 		const config = this.readConfig(dbFile)
 		if (config.askTemplateOnCreate) {
 			const templatePath = await new Promise<string | null>(resolve => {
@@ -380,9 +383,9 @@ export class DatabaseManager {
 					config.templateFolder ?? null,
 				).open()
 			})
-			return this.createNote(dbFile, initialFrontmatter, templatePath)
+			return this.createNote(dbFile, initialFrontmatter, templatePath, title)
 		}
-		return this.createNote(dbFile, initialFrontmatter, config.templatePath ?? null)
+		return this.createNote(dbFile, initialFrontmatter, config.templatePath ?? null, title)
 	}
 
 	private folderOf(path: string): string | null {

@@ -22,6 +22,8 @@ import { BottomSheet } from './BottomSheet'
 import { SaveIndicator } from './SaveIndicator'
 import { useSaveTracker } from '../hooks/useSaveTracker'
 import { stringifyScalar } from '../value-utils'
+import { parseDateValue } from '../calendar-utils'
+import { useCalendarSelection } from '../hooks/useCalendarSelection'
 
 interface DatabaseCalendarProps {
 	dbFile: TFile | null
@@ -84,28 +86,6 @@ function getRowTime(row: NoteRow, fieldId: string): string | null {
 	const parsed = parseDateValue((row as Record<string, unknown>)[fieldId])
 	if (!parsed || parsed.hour === undefined || parsed.minute === undefined) return null
 	return formatTime(parsed.hour, parsed.minute)
-}
-
-function parseDateValue(val: unknown): { year: number; month: number; day: number; hour?: number; minute?: number } | null {
-	if (!val || typeof val !== 'string') return null
-	const tIdx = val.indexOf('T')
-	const datePart = tIdx >= 0 ? val.slice(0, tIdx) : val
-	const parts = datePart.split('-')
-	if (parts.length !== 3) return null
-	const year = parseInt(parts[0])
-	const month = parseInt(parts[1]) - 1
-	const day = parseInt(parts[2])
-	if (isNaN(year) || isNaN(month) || isNaN(day)) return null
-	if (tIdx >= 0) {
-		const timePart = val.slice(tIdx + 1)
-		const tp = timePart.split(':')
-		if (tp.length >= 2) {
-			const hour = parseInt(tp[0])
-			const minute = parseInt(tp[1])
-			if (!isNaN(hour) && !isNaN(minute)) return { year, month, day, hour, minute }
-		}
-	}
-	return { year, month, day }
 }
 
 export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }: DatabaseCalendarProps) {
@@ -252,6 +232,15 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		})
 	}, [filteredRows, dateField])
 
+	const rowByPath = useMemo(() => {
+		const map = new Map<string, NoteRow>()
+		for (const dayRows of rowsByDate.values()) for (const row of dayRows) map.set(row._file.path, row)
+		for (const row of noDateRows) map.set(row._file.path, row)
+		return map
+	}, [rowsByDate, noDateRows])
+	const visiblePaths = useMemo(() => Array.from(rowByPath.keys()), [rowByPath])
+	const selection = useCalendarSelection(visiblePaths)
+
 	// Earliest timed card in current week (minutes from midnight)
 	const earliestTimedMinute = useMemo(() => {
 		if (viewMode !== 'week' || !dateField) return null
@@ -334,6 +323,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	}
 
 	const handleDayClick = async (year: number, month: number, day: number) => {
+		selection.clear()
 		if (!dbFile || !dateField) return
 		const newFile = await manager.createNoteWithTemplate(dbFile)
 		const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`
@@ -406,6 +396,37 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 		if (except !== 'datefield') setDateFieldMenuOpen(false)
 		if (except !== 'fields') setFieldsMenuOpen(false)
 		if (except !== 'filter') setFilterMenuOpen(false)
+	}
+
+	const cardClass = (row: NoteRow, base: string) =>
+		`${base}${selection.selected.has(row._file.path) ? ' nb-cal-card--selected' : ''}`
+
+	const openRow = (row: NoteRow) => { void app.workspace.getLeaf().openFile(row._file) }
+
+	// Desktop: click selects (Cmd/Ctrl toggles), double-click opens. Mobile keeps tap-to-open.
+	const handleCardClick = (e: React.MouseEvent, row: NoteRow) => {
+		e.stopPropagation()
+		if (isMobile) { openRow(row); return }
+		selection.select(row._file.path, e.metaKey || e.ctrlKey)
+	}
+	const handleCardDoubleClick = (e: React.MouseEvent, row: NoteRow) => {
+		e.stopPropagation()
+		if (!isMobile) openRow(row)
+	}
+
+	const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+		if (isMobile) return
+		// Never treat text editing (inline title box, filter inputs) as a delete request.
+		if ((e.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]')) return
+		if (e.key === 'Escape') { selection.clear(); return }
+		if ((e.key === 'Delete' || e.key === 'Backspace') && selection.selected.size > 0) {
+			e.preventDefault()
+			const files = Array.from(selection.selected)
+				.map(path => rowByPath.get(path)?._file)
+				.filter((f): f is TFile => f !== undefined)
+			selection.clear()
+			void trackSave(manager.deleteNotes(files))
+		}
 	}
 
 	const toolbarContent = isMobile ? (
@@ -679,7 +700,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	)
 
 	return (
-		<div className="nb-container">
+		<div className="nb-container nb-cal-root" tabIndex={-1} onKeyDown={handleKeyDown}>
 			{toolbarContent}
 
 			{/* Calendar body */}
@@ -712,10 +733,11 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 											{dayRows.map(row => (
 												<div
 													key={row._file.path}
-													className="nb-cal-card nb-cal-card--allday"
+													className={cardClass(row, 'nb-cal-card nb-cal-card--allday')}
 													draggable
 													onDragStart={e => handleCardDragStart(e, row)}
-													onClick={e => { e.stopPropagation(); void app.workspace.getLeaf().openFile(row._file) }}
+													onClick={e => handleCardClick(e, row)}
+													onDoubleClick={e => handleCardDoubleClick(e, row)}
 												>
 													<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
 												</div>
@@ -800,10 +822,11 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 												return (
 													<div
 														key={row._file.path}
-														className={`nb-cal-card nb-cal-card--timed${heightPct !== null ? ' nb-cal-card--spanning' : ''}`}
+														className={cardClass(row, `nb-cal-card nb-cal-card--timed${heightPct !== null ? ' nb-cal-card--spanning' : ''}`)}
 														draggable
 														onDragStart={e => handleCardDragStart(e, row)}
-														onClick={e => { e.stopPropagation(); void app.workspace.getLeaf().openFile(row._file) }}
+														onClick={e => handleCardClick(e, row)}
+														onDoubleClick={e => handleCardDoubleClick(e, row)}
 														style={{ top: `${topPct}%`, ...(heightPct !== null ? { height: `${heightPct}%` } : {}) }}
 													>
 														<div className="nb-cal-card-title-row">
@@ -859,10 +882,11 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 												{showRows.map(row => (
 													<div
 														key={row._file.path}
-														className="nb-cal-card"
+														className={cardClass(row, 'nb-cal-card')}
 														draggable={!isMobile}
 														onDragStart={!isMobile ? e => handleCardDragStart(e, row) : undefined}
-														onClick={(e) => { e.stopPropagation(); void app.workspace.getLeaf().openFile(row._file) }}
+														onClick={e => handleCardClick(e, row)}
+														onDoubleClick={e => handleCardDoubleClick(e, row)}
 													>
 														<div className="nb-cal-card-title-row">
 															{dateField && (() => { const tm = getRowTime(row, dateField.id); return tm ? <span className="nb-cal-time-badge">{tm}</span> : null })()}
@@ -914,10 +938,11 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 								{noDateRows.map(row => (
 									<div
 										key={row._file.path}
-										className="nb-cal-card nb-cal-card--no-date"
+										className={cardClass(row, 'nb-cal-card nb-cal-card--no-date')}
 										draggable
 										onDragStart={e => handleCardDragStart(e, row)}
-										onClick={() => { void app.workspace.getLeaf().openFile(row._file) }}
+										onClick={e => handleCardClick(e, row)}
+										onDoubleClick={e => handleCardDoubleClick(e, row)}
 									>
 										<span className="nb-cal-card-title">{getCardTitle(row, activeView.cardTitleField)}</span>
 										{(() => {

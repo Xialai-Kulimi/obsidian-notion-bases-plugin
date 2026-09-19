@@ -257,6 +257,18 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	const visiblePaths = useMemo(() => Array.from(rowByPath.keys()), [rowByPath])
 	const selection = useCalendarSelection(visiblePaths)
 
+	// Cards in the order they appear on screen (day by day, top to bottom inside a
+	// day, then the "no date" list). Shift-click ranges follow this order.
+	const orderedPaths = useMemo(() => {
+		const dayKeys = viewMode === 'week'
+			? weekDays.map(d => dateKey(d.getFullYear(), d.getMonth(), d.getDate()))
+			: calendarCells.filter((d): d is number => d !== null).map(d => dateKey(currentYear, currentMonth, d))
+		const paths: string[] = []
+		for (const key of dayKeys) for (const row of rowsByDate.get(key) ?? []) paths.push(row._file.path)
+		for (const row of noDateRows) paths.push(row._file.path)
+		return paths
+	}, [viewMode, weekDays, calendarCells, currentYear, currentMonth, rowsByDate, noDateRows])
+
 	// Earliest timed card in current week (minutes from midnight)
 	const earliestTimedMinute = useMemo(() => {
 		if (viewMode !== 'week' || !dateField) return null
@@ -446,6 +458,7 @@ export function DatabaseCalendar({ dbFile, manager, externalView, onViewChange }
 	const handleCardClick = (e: React.MouseEvent, row: NoteRow) => {
 		e.stopPropagation()
 		if (isMobile) { openRow(row); return }
+		if (e.shiftKey) { selection.selectRange(row._file.path, orderedPaths); return }
 		selection.select(row._file.path, e.metaKey || e.ctrlKey)
 	}
 	const handleCardDoubleClick = (e: React.MouseEvent, row: NoteRow) => {

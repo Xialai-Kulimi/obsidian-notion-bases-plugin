@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
 	applyMove, applyMoveToEnd, buildDateValue, computeMoveDelta, nextSelection, parseDateValue,
-	pruneSelection, resolveDraft, sanitizeTitle, shiftDateValue, snapMinutes, stripTime,
+	pruneSelection, rangeSelection, resolveDraft, sanitizeTitle, shiftDateValue, snapMinutes, stripTime,
 	targetDateValue, yToMinutes,
 	type DropTarget,
 } from '../src/calendar-utils'
@@ -158,6 +158,26 @@ describe('selection helpers', () => {
 	})
 	it('prunes paths that are no longer visible', () => {
 		expect([...pruneSelection(new Set(['a', 'b', 'c']), new Set(['b', 'c', 'd']))].sort()).toEqual(['b', 'c'])
+	})
+})
+
+describe('rangeSelection', () => {
+	const order = ['a', 'b', 'c', 'd', 'e']
+	it('selects everything between the anchor and the target, inclusive', () => {
+		expect([...rangeSelection(order, 'b', 'd')]).toEqual(['b', 'c', 'd'])
+	})
+	it('works backwards too', () => {
+		expect([...rangeSelection(order, 'd', 'b')]).toEqual(['b', 'c', 'd'])
+	})
+	it('selects just the target when it is the anchor', () => {
+		expect([...rangeSelection(order, 'c', 'c')]).toEqual(['c'])
+	})
+	it('falls back to the target alone without a usable anchor', () => {
+		expect([...rangeSelection(order, null, 'c')]).toEqual(['c'])
+		expect([...rangeSelection(order, 'zzz', 'c')]).toEqual(['c'])
+	})
+	it('falls back to the target alone when the target is not in the order', () => {
+		expect([...rangeSelection(order, 'a', 'zzz')]).toEqual(['zzz'])
 	})
 })
 

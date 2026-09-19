@@ -136,6 +136,17 @@ export function pruneSelection(current: ReadonlySet<string>, visible: ReadonlySe
 	return next
 }
 
+/**
+ * Shift-click range: every path between `anchor` and `target` (inclusive, either
+ * direction) in on-screen `order`. Without a usable anchor it is just the target.
+ */
+export function rangeSelection(order: readonly string[], anchor: string | null, target: string): Set<string> {
+	const a = anchor === null ? -1 : order.indexOf(anchor)
+	const b = order.indexOf(target)
+	if (a === -1 || b === -1) return new Set([target])
+	return new Set(order.slice(Math.min(a, b), Math.max(a, b) + 1))
+}
+
 // ── Inline create ───────────────────────────────────────────────────────────
 
 /**

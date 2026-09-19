@@ -3600,6 +3600,7 @@
 }
 
 .nb-cal-card {
+	user-select: none;
 	background: var(--interactive-accent);
 	color: var(--text-on-accent);
 	border-radius: 3px;

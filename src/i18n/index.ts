@@ -5,6 +5,7 @@ import es from './locales/es'
 import fr from './locales/fr'
 import de from './locales/de'
 import zh from './locales/zh'
+import zhTW from './locales/zh-TW'
 import ja from './locales/ja'
 
 type Keys = keyof typeof en
@@ -18,7 +19,7 @@ const locales: Record<string, LocaleDict> = {
 	fr,
 	de,
 	zh,
-	'zh-TW': zh,
+	'zh-TW': zhTW,
 	ja,
 }
 

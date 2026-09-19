@@ -29,3 +29,6 @@ data.json
 
 # Test files
 test-evidence
+
+# Local deploy config
+.env.local
